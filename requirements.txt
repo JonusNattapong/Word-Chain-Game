@@ -1,0 +1,6 @@
+discord.py
+python-dotenv
+pyspellchecker
+requests
+aiohttp
+openai
