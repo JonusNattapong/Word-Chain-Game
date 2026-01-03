@@ -1,0 +1,19 @@
+{
+  "turn_seconds": 10,
+  "cooldown_seconds": 2.0,
+  "long_word_len": 7,
+  "long_word_bonus": 2,
+  "streak_min": 3,
+  "streak_bonus": 1,
+  "combo_step": 5,
+  "combo_bonus": 1,
+  "ai_model": "meta-llama/llama-3.1-405b-instruct:free",
+  "ai_max_tokens": 20,
+  "ai_temperature": 0.7,
+  "max_ai_players": 3,
+  "max_turn_time": 120,
+  "min_turn_time": 5,
+  "scores_file": "data/scores.json",
+  "words_file": "words.txt",
+  "command_prefix": "!"
+}

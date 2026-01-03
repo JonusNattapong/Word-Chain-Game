@@ -30,11 +30,171 @@ A Discord bot for playing the word chain game.
    DISCORD_TOKEN=your_bot_token_here
    OPENROUTER_API_KEY=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
    ```
-   Replace with your actual tokens.
+   Replace with your actual tokens. You can copy `.env.example` as a template.
+
+4. **Configure Game Settings** (Optional):
+   Edit `config.json` to customize game settings:
+   ```json
+   {
+     "turn_seconds": 20,
+     "cooldown_seconds": 2.0,
+     "long_word_len": 7,
+     "long_word_bonus": 2,
+     "ai_model": "meta-llama/llama-3.1-405b-instruct:free",
+     "max_ai_players": 3
+   }
+   ```
+   Use `!reload_config` command to apply changes without restarting the bot.
+
+## Configuration
+
+The bot supports extensive configuration through `config.json` file. Settings are loaded in this priority order:
+1. Environment variables (highest priority)
+2. `config.json` file
+3. Default values (lowest priority)
+
+### Configuration Options
+
+| Setting | Description | Default | Environment Variable |
+|---------|-------------|---------|---------------------|
+| `turn_seconds` | Turn time limit in seconds | 20 | `TURN_SECONDS` |
+| `cooldown_seconds` | Anti-spam cooldown between submissions | 2.0 | `COOLDOWN_SECONDS` |
+| `long_word_len` | Minimum length for long word bonus | 7 | `LONG_WORD_LEN` |
+| `long_word_bonus` | Points for long words | 2 | `LONG_WORD_BONUS` |
+| `streak_min` | Minimum streak for personal bonus | 3 | `STREAK_MIN` |
+| `streak_bonus` | Points for personal streaks | 1 | `STREAK_BONUS` |
+| `combo_step` | Words between channel combo bonuses | 5 | `COMBO_STEP` |
+| `combo_bonus` | Points for channel combos | 1 | `COMBO_BONUS` |
+| `ai_model` | AI model for word generation | meta-llama/llama-3.1-405b-instruct:free | `AI_MODEL` |
+| `ai_max_tokens` | Maximum tokens for AI responses | 20 | `AI_MAX_TOKENS` |
+| `ai_temperature` | AI creativity (0.0-2.0) | 0.7 | `AI_TEMPERATURE` |
+| `max_ai_players` | Maximum AI players allowed | 3 | `MAX_AI_PLAYERS` |
+| `max_turn_time` | Maximum allowed turn time | 120 | `MAX_TURN_TIME` |
+| `min_turn_time` | Minimum allowed turn time | 5 | `MIN_TURN_TIME` |
+| `scores_file` | Path to scores file | data/scores.json | `SCORES_FILE` |
+| `words_file` | Path to words dictionary | words.txt | `WORDS_FILE` |
+| `command_prefix` | Bot command prefix | ! | `COMMAND_PREFIX` |
+
+### Example Configuration
+
+```json
+{
+  "turn_seconds": 15,
+  "cooldown_seconds": 1.5,
+  "long_word_len": 8,
+  "long_word_bonus": 3,
+  "ai_model": "anthropic/claude-3-haiku:beta",
+  "max_ai_players": 5,
+  "command_prefix": "?"
+}
+```
+
+### Configuration Manager
+
+Use the interactive configuration manager script:
+
+```bash
+python config-manager.py
+```
+
+This provides a user-friendly interface to modify game settings without editing JSON manually.
 4. **Run the Bot**:
    ```
    python main.py
    ```
+
+## Docker Setup
+
+### Using Docker Compose (Recommended)
+
+1. **Ensure Docker and Docker Compose are installed**
+2. **Build and run the bot**:
+   ```bash
+   docker-compose up -d
+   ```
+3. **View logs**:
+   ```bash
+   docker-compose logs -f word-chain-bot
+   ```
+4. **Stop the bot**:
+   ```bash
+   docker-compose down
+   ```
+
+### Using Docker directly
+
+1. **Build the image**:
+   ```bash
+   docker build -t word-chain-bot .
+   ```
+2. **Run the container**:
+   ```bash
+   docker run -d \
+     --name word-chain-bot \
+     --env-file .env \
+     -v $(pwd)/scores.json:/app/scores.json \
+     -v $(pwd)/data:/app/data \
+     word-chain-bot
+   ```
+3. **View logs**:
+   ```bash
+   docker logs -f word-chain-bot
+   ```
+
+### Docker Helper Script
+
+A helper script is provided for common Docker operations (Linux/macOS):
+
+```bash
+# Make script executable (first time only)
+chmod +x docker-helper.sh
+
+# Build the image
+./docker-helper.sh build
+
+# Start the bot
+./docker-helper.sh up
+
+# View logs
+./docker-helper.sh logs
+
+# Stop the bot
+./docker-helper.sh down
+
+# Restart the bot
+./docker-helper.sh restart
+
+# Open shell in container
+./docker-helper.sh shell
+
+# Clean up everything
+./docker-helper.sh clean
+```
+
+### Manual Docker Commands
+
+If you prefer manual commands:
+
+```bash
+# Build
+docker-compose build
+
+# Run
+docker-compose up -d
+
+# Logs
+docker-compose logs -f word-chain-bot
+
+# Stop
+docker-compose down
+```
+
+### Docker Environment
+
+- **Persistent Data**: Scores are stored in `scores.json` and mounted as a volume
+- **Environment Variables**: Loaded from `.env` file
+- **Automatic Restarts**: Container restarts automatically unless stopped manually
+- **Data Directory**: Additional data can be stored in the `./data` directory
 
 ## Libraries Used
 
@@ -98,13 +258,16 @@ A Discord bot for playing the word chain game.
 ## Commands
 
 - `!join`: Join the current game
-- `!add_ai [name]`: Add an AI player to compete (max 3 AI players)
+- `!add_ai [name]`: Add an AI player to compete (configurable max AI players)
 - `!remove_ai [name]`: Remove an AI player from the game
 - `!start_game`: Start a new word chain game (after players join)
+- `!reload_config`: Reload configuration from config.json file
+- `!settime [seconds]`: Set turn time for the current channel
 - `!hint`: Get word suggestions for the current required letter
-- `!end_game`: End the current game and save scores
 - `!scores`: Display the leaderboard (top 10 players including AI)
 - `!myscore`: Check your personal score
+- `!status`: Show current game status
+- `!end_game`: End the current game and save scores
 
 ## Performance Optimizations
 

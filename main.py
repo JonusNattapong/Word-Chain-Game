@@ -12,6 +12,8 @@ from spellchecker import SpellChecker  # อธิบาย: ตรวจคำ�
 import aiohttp  # อธิบาย: เรียก API แบบ async (ไม่ค้างบอท)
 from openai import OpenAI  # อธิบาย: ใช้ OpenRouter API สำหรับ AI player
 
+from config import config  # อธิบาย: โหลดการตั้งค่า
+
 
 # ---------------------------
 # Config / Setup
@@ -24,7 +26,7 @@ intents = discord.Intents.default()  # อธิบาย: intents พื้น�
 intents.message_content = True  # อธิบาย: ต้องเปิดเพื่ออ่าน message.content
 intents.members = False  # ปรับเป็น False เพื่อไม่ขอ privileged members intent
 
-bot = commands.Bot(command_prefix="!", intents=intents)  # อธิบาย: สร้างบอท
+bot = commands.Bot(command_prefix=config.command_prefix, intents=intents)  # อธิบาย: สร้างบอท
 
 # OpenRouter AI client setup
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")  # อธิบาย: API key สำหรับ OpenRouter
@@ -40,19 +42,19 @@ openai_client = OpenAI(
 
 spell = SpellChecker()  # อธิบาย: ตัวเช็คคำอังกฤษ (offline)
 
-SCORES_FILE = "scores.json"  # อธิบาย: ไฟล์คะแนนรวม
+SCORES_FILE = config.scores_file  # อธิบาย: ไฟล์คะแนนรวม
 scores_data: Dict[str, int] = {}  # อธิบาย: {"user_id": score}
 
 scores_lock = asyncio.Lock()  # อธิบาย: กันการเขียนไฟล์ชนกัน
 
 # Scoring / anti-spam tuning
-LONG_WORD_LEN = 7
-LONG_WORD_BONUS = 2
-STREAK_MIN = 3
-STREAK_BONUS = 1
-COMBO_STEP = 5
-COMBO_BONUS = 1
-COOLDOWN_SECONDS = 2.0
+LONG_WORD_LEN = config.long_word_len
+LONG_WORD_BONUS = config.long_word_bonus
+STREAK_MIN = config.streak_min
+STREAK_BONUS = config.streak_bonus
+COMBO_STEP = config.combo_step
+COMBO_BONUS = config.combo_bonus
+COOLDOWN_SECONDS = config.cooldown_seconds
 
 # Word validation
 VALID_WORDS: Set[str] = set()  # อธิบาย: ชุดคำอังกฤษที่ถูกต้อง (โหลดจากไฟล์)
@@ -71,7 +73,7 @@ class GameState:  # อธิบาย: state ของเกมใน 1 ห้�
     current_idx: int = 0  # อธิบาย: index ของคนที่ถึงตา
     word_chain: List[str] = field(default_factory=list)  # อธิบาย: ลำดับคำ
     used_words: Set[str] = field(default_factory=set)  # อธิบาย: กันคำซ้ำ
-    turn_seconds: int = 20  # อธิบาย: เวลาต่อเทิร์น (ปรับได้)
+    turn_seconds: int = field(default_factory=lambda: config.turn_seconds)  # อธิบาย: เวลาต่อเทิร์น (ปรับได้)
     turn_task: Optional[asyncio.Task] = None  # อธิบาย: task นับถอยหลังต่อเทิร์น
     turn_message: Optional[discord.Message] = None  # อธิบาย: ข้อความเทิร์น (สำหรับแก้ไข progress bar)
     player_streaks: Dict[int, int] = field(default_factory=dict)  # per-player successful turn streaks
@@ -145,6 +147,25 @@ def current_player_info(state: GameState) -> tuple[Optional[int], Optional[str]]
         return None, ai_name
 
 
+def total_players(state: GameState) -> int:  # อธิบาย: จำนวนผู้เล่นทั้งหมด
+    return len(state.players) + len(state.ai_players)  # อธิบาย: คน + AI
+
+
+def advance_turn(state: GameState):  # อธิบาย: เลื่อนเทิร์นไปคนถัดไป
+    tp = total_players(state)  # อธิบาย: จำนวนทั้งหมด
+    if tp <= 0:  # อธิบาย: กันหารศูนย์
+        state.current_idx = 0  # อธิบาย: รีเซ็ต
+        return  # อธิบาย: จบ
+    state.current_idx = (state.current_idx + 1) % tp  # อธิบาย: เลื่อนไปคนถัดไป
+
+
+def peek_current_name(state: GameState) -> str:  # อธิบาย: ชื่อคนที่ถึงตาตอนนี้ (หลัง advance แล้วใช้ได้)
+    uid, ai_name = current_player_info(state)  # อธิบาย: ดึง info เทิร์นปัจจุบัน
+    if uid is not None:  # อธิบาย: เป็นคน
+        return state.player_names.get(uid, f"User {uid}")  # อธิบาย: ชื่อคน
+    return ai_name or "Unknown"  # อธิบาย: ชื่อ AI หรือ fallback
+
+
 def create_progress_bar(current: int, total: int, length: int = 10) -> str:  # อธิบาย: สร้าง progress bar ด้วย emoji
     if total <= 0:  # อธิบาย: กัน divide by zero
         return "▰" * length  # อธิบาย: เต็ม
@@ -164,7 +185,7 @@ def normalize_word(word: str) -> str:  # อธิบาย: normalize คำ (�
 def load_valid_words():  # อธิบาย: โหลดคำอังกฤษจากไฟล์
     global VALID_WORDS  # อธิบาย: ใช้ global set
     try:  # อธิบาย: กันไฟล์ไม่มี
-        with open("words.txt", "r", encoding="utf-8") as f:  # อธิบาย: อ่านไฟล์
+        with open(config.words_file, "r", encoding="utf-8") as f:  # อธิบาย: อ่านไฟล์
             words = [line.strip().lower() for line in f if line.strip()]  # อธิบาย: normalize
             VALID_WORDS = set(words)  # อธิบาย: แปลงเป็น set สำหรับ lookup เร็ว
         print(f"Loaded {len(VALID_WORDS)} valid words")  # อธิบาย: log
@@ -201,10 +222,10 @@ def generate_ai_word(state: GameState, ai_name: str) -> str:  # อธิบา�
             return None
 
         response = openai_client.chat.completions.create(
-            model="meta-llama/llama-3.1-405b-instruct:free",  # Using Llama 3.1 405B via OpenRouter
+            model=config.ai_model,  # Using configured AI model
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=20,
-            temperature=0.7
+            max_tokens=config.ai_max_tokens,
+            temperature=config.ai_temperature
         )
         
         word = response.choices[0].message.content.strip().lower()
@@ -219,6 +240,10 @@ def generate_ai_word(state: GameState, ai_name: str) -> str:  # อธิบา�
     except Exception as e:
         print(f"AI word generation error: {e}")
         return None
+
+
+async def generate_ai_word_async(state: GameState, ai_name: str) -> Optional[str]:  # อธิบาย: เรียก AI แบบไม่ค้างบอท
+    return await asyncio.to_thread(generate_ai_word, state, ai_name)  # อธิบาย: ย้ายงาน sync ไป thread
 
 
 async def process_word_submission(channel: discord.abc.Messageable, word: str, state: GameState, player_id: int = None, ai_player: str = None):  # อธิบาย: ประมวลผลคำที่ส่งมา
@@ -280,14 +305,8 @@ async def process_word_submission(channel: discord.abc.Messageable, word: str, s
         await save_scores_async()
         
         # Get next player name for AI message
-        total_players = len(state.players) + len(state.ai_players)
-        next_idx = (state.current_idx + 1) % total_players
-        if next_idx < len(state.players):
-            next_pid = state.players[next_idx]
-            next_name = state.player_names.get(next_pid, f"User {next_pid}")
-        else:
-            ai_idx = next_idx - len(state.players)
-            next_name = state.ai_players[ai_idx]
+        advance_turn(state)  # อธิบาย: เลื่อนเทิร์นแค่ครั้งเดียว
+        next_name = peek_current_name(state)  # อธิบาย: คนที่ถึงตาถัดไปจริง ๆ
         
         print("DEBUG: About to send AI message")
         await channel.send(f"🤖 {ai_player} played '{word}' (+{total_points} pts). Next starts with '{word[-1]}'. Next: {next_name}")
@@ -320,14 +339,8 @@ async def process_word_submission(channel: discord.abc.Messageable, word: str, s
         await save_scores_async()
 
         # Get next player name
-        total_players = len(state.players) + len(state.ai_players)
-        next_idx = (state.current_idx + 1) % total_players
-        if next_idx < len(state.players):
-            next_pid = state.players[next_idx]
-            next_name = state.player_names.get(next_pid, f"User {next_pid}")
-        else:
-            ai_idx = next_idx - len(state.players)
-            next_name = state.ai_players[ai_idx]
+        advance_turn(state)  # อธิบาย: เลื่อนเทิร์นแค่ครั้งเดียว
+        next_name = peek_current_name(state)  # อธิบาย: คนที่ถึงตาถัดไปจริง ๆ
 
         bonus_text = f" (+{bonus_points} bonus)" if bonus_points > 0 else ""
         await channel.send(
@@ -335,18 +348,16 @@ async def process_word_submission(channel: discord.abc.Messageable, word: str, s
             f"Your total score: {scores_data[uid]}. Next: {next_name}"
         )
 
-    # Move to next player (for both AI and human)
-    print("DEBUG: ENTERING TURN ADVANCEMENT CODE")
-    total_players = len(state.players) + len(state.ai_players)
-    old_idx = state.current_idx
-    state.current_idx = (state.current_idx + 1) % total_players
-    print(f"DEBUG: Turn advanced from {old_idx} to {state.current_idx} (total players: {total_players})")
+    await send_turn_prompt(channel, state)  # อธิบาย: ส่ง prompt เทิร์นใหม่
+    await start_turn_timer(channel, state)  # อธิบาย: เริ่มจับเวลาใหม่
 
-    print("DEBUG: Calling send_turn_prompt...")
-    await send_turn_prompt(channel, state)
-    print("DEBUG: Calling start_turn_timer...")
-    await start_turn_timer(channel, state)
-    print("DEBUG: Turn advancement complete")
+
+def build_turn_text(state: GameState, name: str, remaining: int) -> str:  # อธิบาย: สร้างข้อความเทิร์นใหม่เสมอ
+    progress_bar = create_progress_bar(remaining, state.turn_seconds, 10)  # อธิบาย: bar ตามเวลาที่เหลือ
+    if not state.word_chain:  # อธิบาย: ยังไม่มีคำ
+        return f"🎮 It's {name}'s turn! Start with any English word.\n{progress_bar} ({remaining}s)"  # อธิบาย: ข้อความเริ่ม
+    last_letter = state.word_chain[-1][-1]  # อธิบาย: ตัวท้าย
+    return f"🎮 It's {name}'s turn! Word must start with '{last_letter}'.\n{progress_bar} ({remaining}s)"  # อธิบาย: ข้อความต่อคำ
 
 
 async def send_turn_prompt(channel: discord.abc.Messageable, state: GameState):  # อธิบาย: บอกว่าใครถึงตา + ตัวอักษร
@@ -362,13 +373,8 @@ async def send_turn_prompt(channel: discord.abc.Messageable, state: GameState): 
     else:
         name = ai_name  # อธิบาย: ชื่อ AI
 
-    progress_bar = create_progress_bar(state.turn_seconds, state.turn_seconds, 10)  # อธิบาย: progress bar เต็ม
-
-    if not state.word_chain:  # อธิบาย: ยังไม่มีคำเริ่ม
-        message = await channel.send(f"🎮 It's {name}'s turn! Start with any English word.\n{progress_bar} ({state.turn_seconds}s)")  # อธิบาย: เริ่มได้ทุกคำ
-    else:
-        last_letter = state.word_chain[-1][-1]  # อธิบาย: ตัวท้ายคำล่าสุด
-        message = await channel.send(f"🎮 It's {name}'s turn! Word must start with '{last_letter}'.\n{progress_bar} ({state.turn_seconds}s)")  # อธิบาย: บอกเงื่อนไข
+    turn_text = build_turn_text(state, name, state.turn_seconds)  # อธิบาย: ข้อความเทิร์นเริ่มต้น
+    message = await channel.send(turn_text)  # อธิบาย: ส่งข้อความเทิร์น
 
     state.turn_message = message  # อธิบาย: เก็บข้อความไว้แก้ไข progress bar
     return message  # อธิบาย: คืน message
@@ -399,12 +405,10 @@ async def start_turn_timer(channel: discord.abc.Messageable, state: GameState): 
 
                 # อธิบาย: อัปเดต progress bar ทุก 2 วินาที
                 if state.turn_message and remaining < state.turn_seconds:  # อธิบาย: มีข้อความและไม่ใช่รอบแรก
-                    progress_bar = create_progress_bar(remaining, state.turn_seconds, 10)  # อธิบาย: สร้าง progress bar
+                    name = peek_current_name(state)  # อธิบาย: ชื่อคนที่ถึงตา
+                    new_text = build_turn_text(state, name, remaining)  # อธิบาย: สร้างข้อความใหม่
                     try:
-                        await state.turn_message.edit(content=state.turn_message.content.replace(
-                            state.turn_message.content.split('\n')[-1],  # อธิบาย: แทนที่บรรทัดสุดท้าย
-                            f"{progress_bar} ({remaining}s)"
-                        ))
+                        await state.turn_message.edit(content=new_text)  # อธิบาย: แก้ไขข้อความ
                     except discord.errors.HTTPException:  # อธิบาย: rate limit หรือข้อผิดพลาดอื่น
                         pass  # อธิบาย: ข้ามไป
 
@@ -419,12 +423,12 @@ async def start_turn_timer(channel: discord.abc.Messageable, state: GameState): 
             if ai_name is not None:
                 # AI player's turn - generate word after countdown
                 await asyncio.sleep(1)  # Small delay for UX
-                word = generate_ai_word(state, ai_name)
+                word = await generate_ai_word_async(state, ai_name)
                 if word:
                     await process_word_submission(channel, word, state, player_id=None, ai_player=ai_name)
                 else:
-                    state.current_idx = (state.current_idx + 1) % (len(state.players) + len(state.ai_players))
-                    await channel.send(f"?? {ai_name} couldn't think of a word! Skipping...")
+                    advance_turn(state)  # อธิบาย: เลื่อนเทิร์นไปคนถัดไป
+                    await channel.send(f"🤖 {ai_name} couldn't think of a word! Skipping...")
                     await send_turn_prompt(channel, state)
                     await start_turn_timer(channel, state)
                 return
@@ -436,7 +440,7 @@ async def start_turn_timer(channel: discord.abc.Messageable, state: GameState): 
             
             name = state.player_names.get(user_id, f"User {user_id}") if user_id else ai_name
 
-            state.current_idx = (state.current_idx + 1) % total_players  # อธิบาย: ข้ามไปคนถัดไป
+            advance_turn(state)  # อธิบาย: ข้ามไปคนถัดไป
             await channel.send(f"⏰ Time's up! Skipping {name}.")  # อธิบาย: แจ้งข้าม
             await send_turn_prompt(channel, state)  # อธิบาย: บอกเทิร์นใหม่
             await start_turn_timer(channel, state)  # อธิบาย: เริ่มจับเวลาใหม่
@@ -490,7 +494,7 @@ async def on_message(message: discord.Message):  # อธิบาย: รับ
     # Check cooldown to prevent spam (but allow during turn)
     now = time.monotonic()
     last = state.cooldowns.get(message.author.id, 0.0)
-    if now - last < 0.5:  # Reduced cooldown for better gameplay
+    if now - last < config.cooldown_seconds:  # Reduced cooldown for better gameplay
         return
     state.cooldowns[message.author.id] = now
 
@@ -603,8 +607,8 @@ async def add_ai(ctx, ai_name: str = "AI"):  # อธิบาย: เพิ่�
         await ctx.send(f"🤖 {ai_name} is already in this channel's game!")  # อธิบาย: แจ้ง
         return  # อธิบาย: จบ
 
-    if len(state.ai_players) >= 3:  # อธิบาย: จำกัด AI ไม่เกิน 3
-        await ctx.send("🤖 Maximum 3 AI players allowed!")  # อธิบาย: แจ้ง
+    if len(state.ai_players) >= config.max_ai_players:  # อธิบาย: จำกัด AI ไม่เกินที่กำหนด
+        await ctx.send(f"🤖 Maximum {config.max_ai_players} AI players allowed!")  # อธิบาย: แจ้ง
         return  # อธิบาย: จบ
 
     # Check if already processing this AI addition to prevent duplicates
@@ -658,18 +662,50 @@ async def remove_ai(ctx, ai_name: str):  # อธิบาย: ลบ AI ออ�
         await start_turn_timer(ctx.channel, state)  # อธิบาย: เริ่มจับเวลาใหม่
 
 
+@bot.command()
+async def reload_config(ctx):  # อธิบาย: โหลด config ใหม่
+    """Reload configuration from config.json file"""
+    try:
+        # Reinitialize config
+        from config import GameConfig
+        global config
+        config = GameConfig()
+
+        if config.validate():
+            await ctx.send("✅ Configuration reloaded successfully!")
+            await ctx.send(f"📋 Current settings: Turn time: {config.turn_seconds}s, AI Model: {config.ai_model}")
+        else:
+            await ctx.send("❌ Configuration validation failed! Check your config.json values.")
+    except Exception as e:
+        await ctx.send(f"❌ Error reloading configuration: {e}")
+
+
 @bot.command(name="scores")
 async def leaderboard(ctx):  # อธิบาย: top 10 คะแนนรวม
     if not scores_data:  # อธิบาย: ยังไม่มีคะแนน
         await ctx.send("No scores yet!")  # อธิบาย: แจ้ง
         return  # อธิบาย: จบ
 
-    sorted_scores = sorted(scores_data.items(), key=lambda x: x[1], reverse=True)  # อธิบาย: เรียงมากไปน้อย
+    sorted_scores = sorted(scores_data.items(), key=lambda x: x[1], reverse=True)  # อธิบาย: เรียงคะแนน
     text = "🏆 **Leaderboard (Global)** 🏆\n"  # อธิบาย: หัวข้อ
-    for i, (user_id, score) in enumerate(sorted_scores[:10], 1):  # อธิบาย: top 10
-        user = bot.get_user(int(user_id))  # อธิบาย: ดึงชื่อจาก cache
-        name = user.display_name if user else f"User {user_id}"  # อธิบาย: fallback
-        text += f"{i}. {name}: {score}\n"  # อธิบาย: ต่อข้อความ
+
+    rank = 1  # อธิบาย: ลำดับ
+    for user_key, score in sorted_scores:  # อธิบาย: วนลูปคะแนน
+        if rank > 10:  # อธิบาย: จำกัด top 10
+            break  # อธิบาย: จบ
+
+        if str(user_key).startswith("ai_"):  # อธิบาย: ถ้าเป็น AI
+            name = str(user_key).replace("ai_", "🤖 ")  # อธิบาย: แสดงชื่อ AI
+        else:
+            try:
+                user = bot.get_user(int(user_key))  # อธิบาย: ดึง user จาก cache
+                name = user.display_name if user else f"User {user_key}"  # อธิบาย: fallback
+            except ValueError:
+                name = f"User {user_key}"  # อธิบาย: กันข้อมูลแปลก
+
+        text += f"{rank}. {name}: {score}\n"  # อธิบาย: ต่อบรรทัด
+        rank += 1  # อธิบาย: เพิ่มอันดับ
+
     await ctx.send(text)  # อธิบาย: ส่ง
 
 
@@ -687,19 +723,19 @@ async def status(ctx):  # อธิบาย: ดูสถานะเกมข�
         await ctx.send("ℹ️ No active game in this channel. Use !start_game")  # อธิบาย: แจ้ง
         return  # อธิบาย: จบ
 
-    if not state.players:  # อธิบาย: ไม่มีผู้เล่น
+    if not state.players and not state.ai_players:  # อธิบาย: ไม่มีผู้เล่น
         await ctx.send("ℹ️ Game is active but no players joined. Use !join")  # อธิบาย: แจ้ง
         return  # อธิบาย: จบ
 
-    pid = current_player_id(state)  # อธิบาย: คนที่ถึงตา
-    name = state.player_names.get(pid, f"User {pid}")  # อธิบาย: ใช้ชื่อที่เก็บไว้ หรือ fallback
+    uid, ai_name = current_player_info(state)  # อธิบาย: ดึงคนที่ถึงตา
+    turn_name = state.player_names.get(uid, f"User {uid}") if uid is not None else (ai_name or "Unknown")  # อธิบาย: ชื่อเทิร์น
 
     last = state.word_chain[-1] if state.word_chain else "(none)"  # อธิบาย: คำล่าสุด
     await ctx.send(  # อธิบาย: สรุป state
         f"📣 Active: {state.active}\n"
-        f"👥 Players: {len(state.players)}\n"
+        f"👥 Humans: {len(state.players)} | 🤖 AIs: {len(state.ai_players)}\n"
         f"🧠 Last word: {last}\n"
-        f"🎯 Current turn: {name}\n"
+        f"🎯 Current turn: {turn_name}\n"
         f"⏳ Turn time: {state.turn_seconds}s"
     )
 
@@ -707,14 +743,14 @@ async def status(ctx):  # อธิบาย: ดูสถานะเกมข�
 @bot.command()
 async def settime(ctx, seconds: int):  # อธิบาย: ปรับเวลาเทิร์น
     state = get_game(ctx.channel.id)  # อธิบาย: state ห้อง
-    seconds = max(5, min(seconds, 120))  # อธิบาย: จำกัด 5-120 วิ
+    seconds = max(config.min_turn_time, min(seconds, config.max_turn_time))  # อธิบาย: จำกัดตาม config
     state.turn_seconds = seconds  # อธิบาย: ตั้งค่า
     await ctx.send(f"⏳ Turn time set to {seconds}s for this channel.")  # อธิบาย: แจ้ง
 
 
 @bot.command()
 async def countdown(ctx, seconds: int = 10):  # อธิบาย: ทดสอบ countdown แบบ text (จำลอง)
-    seconds = max(1, min(seconds, 60))  # อธิบาย: จำกัด 1-60 วิ
+    seconds = max(1, min(seconds, config.max_turn_time))  # อธิบาย: จำกัดตาม config
     message = await ctx.send(f"⏳ {seconds}")  # อธิบาย: ส่งข้อความเริ่ม
 
     for i in range(seconds - 1, 0, -1):  # อธิบาย: นับถอยหลัง

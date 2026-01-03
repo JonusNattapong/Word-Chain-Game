@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  word-chain-bot:
+    build: .
+    container_name: word-chain-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+    networks:
+      - word-chain-network
+
+networks:
+  word-chain-network:
+    driver: bridge
