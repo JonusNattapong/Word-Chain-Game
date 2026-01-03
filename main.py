@@ -394,6 +394,18 @@ async def start_turn_timer(channel: discord.abc.Messageable, state: GameState): 
         try:
             user_id, ai_name = current_player_info(state)  # อธิบาย: เช็คว่าเป็น human หรือ AI
             
+            if ai_name is not None:
+                # AI player's turn - generate word immediately
+                word = await generate_ai_word_async(state, ai_name)
+                if word:
+                    await process_word_submission(channel, word, state, player_id=None, ai_player=ai_name)
+                else:
+                    advance_turn(state)  # อธิบาย: เลื่อนเทิร์นไปคนถัดไป
+                    await channel.send(f"🤖 {ai_name} couldn't think of a word! Skipping...")
+                    await send_turn_prompt(channel, state)
+                    await start_turn_timer(channel, state)
+                return
+
             # Countdown timer (both human and AI)
             remaining = state.turn_seconds  # อธิบาย: เวลาที่เหลือ
             update_interval = 2  # อธิบาย: อัปเดตทุก 2 วินาที
@@ -419,19 +431,6 @@ async def start_turn_timer(channel: discord.abc.Messageable, state: GameState): 
             total_players = len(state.players) + len(state.ai_players)
             if not state.active or total_players == 0:  # อธิบาย: ตรวจสอบอีกครั้ง
                 return  # อธิบาย: จบ
-
-            if ai_name is not None:
-                # AI player's turn - generate word after countdown
-                await asyncio.sleep(1)  # Small delay for UX
-                word = await generate_ai_word_async(state, ai_name)
-                if word:
-                    await process_word_submission(channel, word, state, player_id=None, ai_player=ai_name)
-                else:
-                    advance_turn(state)  # อธิบาย: เลื่อนเทิร์นไปคนถัดไป
-                    await channel.send(f"🤖 {ai_name} couldn't think of a word! Skipping...")
-                    await send_turn_prompt(channel, state)
-                    await start_turn_timer(channel, state)
-                return
 
             # Reset streaks and combo for skipped player
             if user_id is not None:
