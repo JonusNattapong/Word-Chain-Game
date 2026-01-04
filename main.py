@@ -8,7 +8,6 @@ from typing import Dict, List, Set, Optional, Tuple  # type hints
 import discord  # discord api
 from discord.ext import commands  # command framework
 from dotenv import load_dotenv  # โหลด .env
-from spellchecker import SpellChecker  # ตรวจคำอังกฤษแบบ offline
 import aiohttp  # http client แบบ async
 from openai import OpenAI  # ใช้ OpenRouter (ผ่าน OpenAI SDK)
 import discord.utils  # สำหรับ escape markdown
@@ -35,8 +34,6 @@ intents = discord.Intents.default()  # intents พื้นฐาน
 intents.message_content = True  # ต้องเปิดเพื่ออ่าน message.content
 intents.members = False  # ไม่ขอ privileged members intent
 
-spell = SpellChecker()  # ตัวเช็คคำอังกฤษ (offline)
-
 allowed_mentions_none = discord.AllowedMentions.none()  # กันบอท @everyone / @here / mention คนโดยไม่ตั้งใจ
 
 
@@ -45,18 +42,6 @@ def dynamic_prefix(bot: commands.Bot, message: discord.Message):  # ฟังก
 
 
 bot = commands.Bot(command_prefix=dynamic_prefix, intents=intents)  # สร้างบอทแบบ prefix เปลี่ยนได้
-
-@bot.setup_hook
-async def setup_hook():  # setup hook สำหรับ init session
-    global http_session  # ใช้ session global
-    http_session = aiohttp.ClientSession()  # สร้าง session ครั้งเดียว
-
-async def close():  # override close เพื่อปิด session
-    if http_session and not http_session.closed:  # ถ้าเปิดอยู่
-        await http_session.close()  # ปิด session
-    await super().close()  # ปิดบอทปกติ
-
-bot.close = close  # กำหนด close method
 
 
 openai_client = OpenAI(  # สร้าง client OpenRouter ผ่าน OpenAI SDK
@@ -74,6 +59,7 @@ scores_lock = asyncio.Lock()  # กันการเขียนไฟล์ช
 
 ai_display_names: Dict[str, str] = {}  # {"ai_key": "display_name"} สำหรับ leaderboard
 not_your_turn_cooldowns: Dict[int, float] = {}  # quiet cooldown สำหรับ "not your turn" messages
+user_display_names: Dict[int, str] = {}  # {user_id: display_name} สำหรับ leaderboard
 
 VALID_WORDS: Set[str] = set()  # ชุดคำอังกฤษที่ถูกต้อง (โหลดจากไฟล์)
 valid_words_lock = asyncio.Lock()  # กัน reload words พร้อมกัน
@@ -229,6 +215,14 @@ def sanitize_ai_key(ai_name: str) -> str:  # ทำชื่อ AI ให้ป�
     safe = (ai_name or "AI").strip().lower()  # trim + lower
     safe = safe.replace(" ", "_")  # แทน space กัน key แปลก
     return f"ai_{safe}"  # ใส่ prefix
+
+
+def cleanup_cooldowns():  # เคลียร์ cooldowns เก่า ๆ
+    """Remove cooldowns older than 1 hour to prevent memory leak"""
+    now = time.monotonic()
+    cutoff = now - 3600  # 1 hour ago
+    global not_your_turn_cooldowns
+    not_your_turn_cooldowns = {k: v for k, v in not_your_turn_cooldowns.items() if v > cutoff}
 
 
 # ---------------------------
@@ -536,9 +530,10 @@ async def process_word_submission(
 
 @bot.event
 async def on_ready():  # บอทพร้อม
-    global SCORES_FILE  # ใช้ scores_file global
-    load_scores_sync()  # โหลดคะแนน
+    global SCORES_FILE, http_session  # ใช้ scores_file และ http_session global
     SCORES_FILE = config.scores_file  # กำหนดไฟล์คะแนนจาก config ปัจจุบัน
+    load_scores_sync()  # โหลดคะแนน
+    http_session = aiohttp.ClientSession()  # สร้าง session ครั้งเดียว
     await load_valid_words_async()  # โหลด wordlist
 
     print("Bot is ready")  # log
@@ -575,6 +570,10 @@ async def on_message(message: discord.Message):  # รับข้อควา�
     # เช็คว่าเป็นตาของคนนี้หรือไม่ก่อน (สำคัญ: cooldown ห้าม block คนที่ถึงตา)
     uid, ai_name = current_player_info(state)  # ดึงคนที่ถึงตา
     if uid != message.author.id:  # ไม่ใช่ตาเขา
+        # Cleanup old cooldowns periodically
+        if len(not_your_turn_cooldowns) > 100:  # ถ้ามีมากกว่า 100 entries
+            cleanup_cooldowns()  # เคลียร์เก่า
+
         # quiet cooldown สำหรับ "not your turn" messages (กัน spam)
         now = time.monotonic()  # เวลาปัจจุบัน
         last_quiet = not_your_turn_cooldowns.get(message.author.id, 0.0)  # เวลาครั้งล่าสุดที่ส่งข้อความนี้
@@ -658,7 +657,8 @@ async def join(ctx):  # เข้าร่วมเกม
     state.joining_users.add(uid)  # mark กำลัง join
     try:
         state.players.append(uid)  # เพิ่มผู้เล่น
-        state.player_names[uid] = ctx.author.display_name  # เก็บชื่อ
+        state.player_names[uid] = ctx.author.display_name  # เก็บชื่อใน state
+        user_display_names[uid] = ctx.author.display_name  # เก็บชื่อ global สำหรับ leaderboard
         await ctx.send(f"➕ {ctx.author.display_name} joined this channel's game!", allowed_mentions=allowed_mentions_none)  # แจ้ง
     finally:
         state.joining_users.discard(uid)  # unmark
@@ -710,7 +710,17 @@ async def leave(ctx):  # ออกจากเกม
 @bot.command()
 async def add_ai(ctx, ai_name: str = "AI"):  # เพิ่ม AI
     state = get_game(ctx.channel.id)  # state ห้อง
-
+    # Validate AI name
+    ai_name = ai_name.strip()  # trim spaces
+    if not ai_name:  # empty name
+        await ctx.send("🤖 AI name cannot be empty!", allowed_mentions=allowed_mentions_none)  # แจ้ง
+        return  # จบ
+    if len(ai_name) > 50:  # too long
+        await ctx.send("🤖 AI name too long! Maximum 50 characters.", allowed_mentions=allowed_mentions_none)  # แจ้ง
+        return  # จบ
+    if not ai_name.replace(" ", "").replace("_", "").isalnum():  # invalid characters
+        await ctx.send("🤖 AI name can only contain letters, numbers, spaces, and underscores!", allowed_mentions=allowed_mentions_none)  # แจ้ง
+        return  # จบ
     if ai_name in state.ai_players:  # กันซ้ำ
         await ctx.send(f"🤖 {ai_name} is already in this channel's game!", allowed_mentions=allowed_mentions_none)  # แจ้ง
         return  # จบ
@@ -829,8 +839,8 @@ async def leaderboard(ctx):  # top 10 คะแนนรวม (รองรั�
             name = f"🤖 {display_name}"  # ชื่อ AI
         else:
             try:
-                u = bot.get_user(int(user_key))  # ดึง user จาก cache
-                name = u.display_name if u else f"User {user_key}"  # fallback
+                user_id = int(user_key)
+                name = user_display_names.get(user_id, f"User {user_key}")  # ใช้ชื่อที่เก็บไว้ หรือ fallback
             except Exception:
                 name = f"User {user_key}"  # กันข้อมูลแปลก
 
