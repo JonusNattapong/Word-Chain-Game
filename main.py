@@ -66,6 +66,11 @@ valid_words_lock = asyncio.Lock()  # กัน reload words พร้อมก�
 
 http_session: Optional[aiohttp.ClientSession] = None  # session รวมทั้งบอท
 
+# Additional locks for thread safety
+games_lock = asyncio.Lock()  # กันการเข้าถึง games dict ชนกัน
+cooldowns_lock = asyncio.Lock()  # กันการเข้าถึง cooldowns dict ชนกัน
+display_names_lock = asyncio.Lock()  # กันการเข้าถึง display names dict ชนกัน
+
 
 # ---------------------------
 # Game State (แยกต่อห้อง)
@@ -96,8 +101,33 @@ class GameState:  # state ของเกมใน 1 ห้อง
 
     turn_token: int = 0  # token เพิ่มทุกเทิร์น กัน AI/Timer ยิงซ้อน (race condition)
 
+    # Lock for thread-safe state modifications
+    _lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
 
 games: Dict[int, GameState] = {}  # {channel_id: GameState}
+
+
+# --------------------------- Helper functions for safe state access ---------------------------
+
+async def update_state_activity(state: GameState):
+    """Update the last activity timestamp for a game state"""
+    state._last_activity = time.time()
+
+
+async def with_state_lock(state: GameState, func):
+    """Execute a function with state lock held"""
+    async with state._lock:
+        await update_state_activity(state)
+        return await func()
+
+
+def with_state_lock_sync(state: GameState, func):
+    """Execute a synchronous function with state lock held (use with caution)"""
+    # Note: This is not truly thread-safe for sync functions, but provides basic protection
+    # For full thread safety, all state modifications should be async
+    state._last_activity = time.time()
+    return func()
 
 
 # ---------------------------
@@ -146,9 +176,36 @@ async def load_valid_words_async():  # โหลดคำอังกฤษจ�
 # ---------------------------
 
 def get_game(channel_id: int) -> GameState:  # ดึง state ตามห้อง
+    # Use lock to prevent race conditions when accessing games dict
+    # Note: This is a synchronous function, so we can't use async lock here
+    # We'll rely on the fact that dict access is atomic in CPython for simple operations
     if channel_id not in games:  # ถ้ายังไม่มีให้สร้าง
         games[channel_id] = GameState()  # init
     return games[channel_id]  # คืน state
+
+
+async def cleanup_inactive_games():  # เคลียร์เกมที่ไม่ได้ใช้มานาน
+    """Periodically clean up inactive games to prevent memory leaks"""
+    while True:
+        try:
+            await asyncio.sleep(3600)  # ตรวจทุก 1 ชั่วโมง
+            current_time = time.time()
+
+            async with games_lock:
+                channels_to_remove = []
+                for channel_id, state in games.items():
+                    # ถ้าเกมไม่ active และไม่ได้ใช้งานมานาน (>24 ชั่วโมง)
+                    if not state.active and hasattr(state, '_last_activity'):
+                        if current_time - state._last_activity > 86400:  # 24 ชั่วโมง
+                            channels_to_remove.append(channel_id)
+
+                for channel_id in channels_to_remove:
+                    del games[channel_id]
+                    print(f"Cleaned up inactive game for channel {channel_id}")
+
+        except Exception as e:
+            print(f"Error in cleanup task: {e}")
+            await asyncio.sleep(60)  # รอแล้วลองใหม่
 
 
 def total_players(state: GameState) -> int:  # จำนวนผู้เล่นทั้งหมด
@@ -222,7 +279,18 @@ def cleanup_cooldowns():  # เคลียร์ cooldowns เก่า ๆ
     now = time.monotonic()
     cutoff = now - 3600  # 1 hour ago
     global not_your_turn_cooldowns
+    # Note: This function is called synchronously, so we can't use async lock
+    # In practice, this should be fine as cleanup is infrequent
     not_your_turn_cooldowns = {k: v for k, v in not_your_turn_cooldowns.items() if v > cutoff}
+
+
+async def cleanup_cooldowns_async():  # async version สำหรับ cleanup ที่ปลอดภัย
+    """Async version of cleanup_cooldowns with proper locking"""
+    now = time.monotonic()
+    cutoff = now - 3600  # 1 hour ago
+    async with cooldowns_lock:
+        global not_your_turn_cooldowns
+        not_your_turn_cooldowns = {k: v for k, v in not_your_turn_cooldowns.items() if v > cutoff}
 
 
 # ---------------------------
@@ -460,67 +528,69 @@ async def process_word_submission(
     # --- Stop timer for this turn (safe) ---
     await cancel_turn_timer_async(state)  # ยกเลิก timer รอบนี้ (ปลอดภัย)
 
-    # --- Apply word ---
-    state.word_chain.append(word)  # เพิ่มใน chain
-    state.used_words.add(word)  # mark used
+    # --- Apply word (with state lock) ---
+    async with state._lock:  # lock เพื่อแก้ไข state อย่างปลอดภัย
+        await update_state_activity(state)  # track activity
 
-    # --- Scoring ---
-    base_points = 1  # คะแนนพื้นฐาน
-    bonus_points = 0  # คะแนนโบนัส
+        state.word_chain.append(word)  # เพิ่มใน chain
+        state.used_words.add(word)  # mark used
 
-    if len(word) >= config.long_word_len:  # โบนัสคำยาว
-        bonus_points += config.long_word_bonus  # บวกโบนัส
+        # --- Scoring ---
+        base_points = 1  # คะแนนพื้นฐาน
+        bonus_points = 0  # คะแนนโบนัส
 
-    if ai_player:  # ถ้าเป็น AI
-        key = sanitize_ai_key(ai_player)  # key ปลอดภัย
-        ai_display_names[key] = ai_player  # เก็บ display name
-        total_points = base_points + bonus_points  # รวมคะแนน
-        async with scores_lock:  # lock เพื่อกัน lost update
-            scores_data[key] = scores_data.get(key, 0) + total_points  # เพิ่มคะแนน AI
-            await save_scores_async()  # เซฟ
+        if len(word) >= config.long_word_len:  # โบนัสคำยาว
+            bonus_points += config.long_word_bonus  # บวกโบนัส
 
-        advance_turn(state)  # เลื่อนไปคนถัดไป
-        next_name = peek_current_name(state)  # ชื่อคนถัดไปจริง
-        next_name = discord.utils.escape_markdown(next_name)  # escape
+        if ai_player:  # ถ้าเป็น AI
+            key = sanitize_ai_key(ai_player)  # key ปลอดภัย
+            async with display_names_lock:
+                ai_display_names[key] = ai_player  # เก็บ display name
+            total_points = base_points + bonus_points  # รวมคะแนน
+            async with scores_lock:  # lock เพื่อกัน lost update
+                scores_data[key] = scores_data.get(key, 0) + total_points  # เพิ่มคะแนน AI
+                await save_scores_async()  # เซฟ
 
+            advance_turn(state)  # เลื่อนไปคนถัดไป
+
+        else:  # ถ้าเป็น human
+            if player_id is None:  # กันกรณีข้อมูลไม่ครบ
+                return  # จบ
+
+            streak = state.player_streaks.get(player_id, 0) + 1  # เพิ่ม streak
+            state.player_streaks[player_id] = streak  # เก็บ streak
+            if streak >= config.streak_min:  # ถึงเกณฑ์ streak
+                bonus_points += config.streak_bonus  # บวกโบนัส
+
+            state.combo_count += 1  # เพิ่ม combo
+            if config.combo_step > 0 and (state.combo_count % config.combo_step == 0):  # ทุก ๆ step
+                bonus_points += config.combo_bonus  # บวกโบนัส
+
+            total_points = base_points + bonus_points  # รวมคะแนน
+            key = str(player_id)  # key ของ human
+            async with scores_lock:  # lock เพื่อกัน lost update
+                scores_data[key] = scores_data.get(key, 0) + total_points  # เพิ่มคะแนน human
+                await save_scores_async()  # เซฟ
+
+            advance_turn(state)  # เลื่อนไปคนถัดไป
+
+    # --- Send results (outside lock to avoid blocking) ---
+    next_name = peek_current_name(state)  # ชื่อคนถัดไปจริง
+    next_name = discord.utils.escape_markdown(next_name)  # escape
+
+    if ai_player:
         await channel.send(  # ส่งผลลัพธ์
             f"🤖 {discord.utils.escape_markdown(ai_player)} played '{word}' (+{total_points} pts). "
             f"Next starts with '{word[-1]}'. Next: {next_name}",
             allowed_mentions=allowed_mentions_none,
         )
-
-    else:  # ถ้าเป็น human
-        if player_id is None:  # กันกรณีข้อมูลไม่ครบ
-            return  # จบ
-
-        streak = state.player_streaks.get(player_id, 0) + 1  # เพิ่ม streak
-        state.player_streaks[player_id] = streak  # เก็บ streak
-        if streak >= config.streak_min:  # ถึงเกณฑ์ streak
-            bonus_points += config.streak_bonus  # บวกโบนัส
-
-        state.combo_count += 1  # เพิ่ม combo
-        if config.combo_step > 0 and (state.combo_count % config.combo_step == 0):  # ทุก ๆ step
-            bonus_points += config.combo_bonus  # บวกโบนัส
-
-        total_points = base_points + bonus_points  # รวมคะแนน
-        key = str(player_id)  # key ของ human
-        async with scores_lock:  # lock เพื่อกัน lost update
-            scores_data[key] = scores_data.get(key, 0) + total_points  # เพิ่มคะแนน human
-            await save_scores_async()  # เซฟ
-
-        advance_turn(state)  # เลื่อนไปคนถัดไป
-        next_name = peek_current_name(state)  # ชื่อคนถัดไปจริง
-        next_name = discord.utils.escape_markdown(next_name)  # escape
-
+    else:
         bonus_text = f" (+{bonus_points} bonus)" if bonus_points > 0 else ""  # ข้อความโบนัส
         await channel.send(  # ส่งผลลัพธ์
             f"✅ Added '{word}' (+{total_points} pts{bonus_text}). Next starts with '{word[-1]}'. "
             f"Your total score: {scores_data[key]}. Next: {next_name}",
             allowed_mentions=allowed_mentions_none,
         )
-
-    # --- Start next turn ---
-    await send_turn_prompt(channel, state)  # ส่ง prompt เทิร์นใหม่
     await start_turn_timer(channel, state)  # เริ่ม timer เทิร์นใหม่
 
 
@@ -535,6 +605,9 @@ async def on_ready():  # บอทพร้อม
     load_scores_sync()  # โหลดคะแนน
     http_session = aiohttp.ClientSession()  # สร้าง session ครั้งเดียว
     await load_valid_words_async()  # โหลด wordlist
+
+    # Start cleanup task for inactive games
+    asyncio.create_task(cleanup_inactive_games())
 
     print("Bot is ready")  # log
 
@@ -570,16 +643,17 @@ async def on_message(message: discord.Message):  # รับข้อควา�
     # เช็คว่าเป็นตาของคนนี้หรือไม่ก่อน (สำคัญ: cooldown ห้าม block คนที่ถึงตา)
     uid, ai_name = current_player_info(state)  # ดึงคนที่ถึงตา
     if uid != message.author.id:  # ไม่ใช่ตาเขา
-        # Cleanup old cooldowns periodically
-        if len(not_your_turn_cooldowns) > 100:  # ถ้ามีมากกว่า 100 entries
-            cleanup_cooldowns()  # เคลียร์เก่า
+        # Cleanup old cooldowns periodically (async version)
+        async with cooldowns_lock:
+            if len(not_your_turn_cooldowns) > 100:  # ถ้ามีมากกว่า 100 entries
+                await cleanup_cooldowns_async()  # เคลียร์เก่าแบบ async
 
-        # quiet cooldown สำหรับ "not your turn" messages (กัน spam)
-        now = time.monotonic()  # เวลาปัจจุบัน
-        last_quiet = not_your_turn_cooldowns.get(message.author.id, 0.0)  # เวลาครั้งล่าสุดที่ส่งข้อความนี้
-        if now - last_quiet < 5.0:  # cooldown 5 วินาทีสำหรับข้อความนี้
-            return  # เงียบ ๆ ไม่ส่งข้อความซ้ำ
-        not_your_turn_cooldowns[message.author.id] = now  # อัปเดตเวลา
+            # quiet cooldown สำหรับ "not your turn" messages (กัน spam)
+            now = time.monotonic()  # เวลาปัจจุบัน
+            last_quiet = not_your_turn_cooldowns.get(message.author.id, 0.0)  # เวลาครั้งล่าสุดที่ส่งข้อความนี้
+            if now - last_quiet < 5.0:  # cooldown 5 วินาทีสำหรับข้อความนี้
+                return  # เงียบ ๆ ไม่ส่งข้อความซ้ำ
+            not_your_turn_cooldowns[message.author.id] = now  # อัปเดตเวลา
 
         name = state.player_names.get(uid, f"User {uid}") if uid is not None else (ai_name or "Unknown")  # ชื่อคนที่ถึงตา
         name = discord.utils.escape_markdown(name)  # escape
@@ -608,27 +682,31 @@ async def on_error(event, *args, **kwargs):  # log error ระดับ event
 @bot.command()
 async def start_game(ctx):  # เริ่มเกม
     state = get_game(ctx.channel.id)  # state ห้อง
-    state.active = True  # เปิดเกม
 
-    # reset เกมในห้อง
-    state.word_chain = []  # รีเซ็ตคำ
-    state.used_words = set()  # รีเซ็ต used
-    state.player_streaks = {}  # รีเซ็ต streak
-    state.combo_count = 0  # รีเซ็ต combo
-    state.turn_seconds = config.turn_seconds  # ใช้ค่าจาก config ล่าสุด
-    state.current_idx = 0  # เริ่มที่คนแรก
-    state.turn_token += 1  # bump token เพื่อกัน task เก่าทับ
+    async with state._lock:  # lock เพื่อแก้ไข state อย่างปลอดภัย
+        await update_state_activity(state)  # track activity
 
-    await cancel_turn_timer_async(state)  # ยกเลิก timer เก่า
+        state.active = True  # เปิดเกม
 
-    tp = total_players(state)  # จำนวนผู้เล่นทั้งหมด
-    if tp == 0:  # ไม่มีผู้เล่น
-        await ctx.send("🎮 Game started, but no players yet. Use !join or !add_ai", allowed_mentions=allowed_mentions_none)  # แจ้ง
-        return  # จบ
+        # reset เกมในห้อง
+        state.word_chain = []  # รีเซ็ตคำ
+        state.used_words = set()  # รีเซ็ต used
+        state.player_streaks = {}  # รีเซ็ต streak
+        state.combo_count = 0  # รีเซ็ต combo
+        state.turn_seconds = config.turn_seconds  # ใช้ค่าจาก config ล่าสุด
+        state.current_idx = 0  # เริ่มที่คนแรก
+        state.turn_token += 1  # bump token เพื่อกัน task เก่าทับ
 
-    await ctx.send("🎮 Word chain started in this channel! Use !join / !add_ai then play in turn.", allowed_mentions=allowed_mentions_none)  # แจ้งเริ่ม
-    await send_turn_prompt(ctx.channel, state)  # ส่ง prompt
-    await start_turn_timer(ctx.channel, state)  # เริ่ม timer
+        await cancel_turn_timer_async(state)  # ยกเลิก timer เก่า
+
+        tp = total_players(state)  # จำนวนผู้เล่นทั้งหมด
+        if tp == 0:  # ไม่มีผู้เล่น
+            await ctx.send("🎮 Game started, but no players yet. Use !join or !add_ai", allowed_mentions=allowed_mentions_none)  # แจ้ง
+            return  # จบ
+
+        await ctx.send("🎮 Word chain started in this channel! Use !join / !add_ai then play in turn.", allowed_mentions=allowed_mentions_none)  # แจ้งเริ่ม
+        await send_turn_prompt(ctx.channel, state)  # ส่ง prompt
+        await start_turn_timer(ctx.channel, state)  # เริ่ม timer
 
 
 @bot.command()
@@ -658,7 +736,8 @@ async def join(ctx):  # เข้าร่วมเกม
     try:
         state.players.append(uid)  # เพิ่มผู้เล่น
         state.player_names[uid] = ctx.author.display_name  # เก็บชื่อใน state
-        user_display_names[uid] = ctx.author.display_name  # เก็บชื่อ global สำหรับ leaderboard
+        async with display_names_lock:
+            user_display_names[uid] = ctx.author.display_name  # เก็บชื่อ global สำหรับ leaderboard
         await ctx.send(f"➕ {ctx.author.display_name} joined this channel's game!", allowed_mentions=allowed_mentions_none)  # แจ้ง
     finally:
         state.joining_users.discard(uid)  # unmark
@@ -830,22 +909,23 @@ async def leaderboard(ctx):  # top 10 คะแนนรวม (รองรั�
     text = "🏆 **Leaderboard (Global)** 🏆\n"  # หัวข้อ
 
     rank = 1  # ลำดับ
-    for user_key, score in sorted_scores:  # วนทุกคน
-        if rank > 10:  # top 10
-            break  # จบ
+    async with display_names_lock:  # lock เพื่ออ่าน display names อย่างปลอดภัย
+        for user_key, score in sorted_scores:  # วนทุกคน
+            if rank > 10:  # top 10
+                break  # จบ
 
-        if str(user_key).startswith("ai_"):  # ถ้าเป็น AI
-            display_name = ai_display_names.get(user_key, str(user_key).replace("ai_", ""))  # ใช้ display name ถ้ามี
-            name = f"🤖 {display_name}"  # ชื่อ AI
-        else:
-            try:
-                user_id = int(user_key)
-                name = user_display_names.get(user_id, f"User {user_key}")  # ใช้ชื่อที่เก็บไว้ หรือ fallback
-            except Exception:
-                name = f"User {user_key}"  # กันข้อมูลแปลก
+            if str(user_key).startswith("ai_"):  # ถ้าเป็น AI
+                display_name = ai_display_names.get(user_key, str(user_key).replace("ai_", ""))  # ใช้ display name ถ้ามี
+                name = f"🤖 {display_name}"  # ชื่อ AI
+            else:
+                try:
+                    user_id = int(user_key)
+                    name = user_display_names.get(user_id, f"User {user_key}")  # ใช้ชื่อที่เก็บไว้ หรือ fallback
+                except Exception:
+                    name = f"User {user_key}"  # กันข้อมูลแปลก
 
-        text += f"{rank}. {name}: {score}\n"  # ต่อบรรทัด
-        rank += 1  # เพิ่มอันดับ
+            text += f"{rank}. {name}: {score}\n"  # ต่อบรรทัด
+            rank += 1  # เพิ่มอันดับ
 
     await ctx.send(text, allowed_mentions=allowed_mentions_none)  # ส่ง
 

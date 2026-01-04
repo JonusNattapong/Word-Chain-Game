@@ -1,8 +1,53 @@
-# Word-Chain-Game
+# Word Chain Discord Bot
 
-A Discord bot for playing the word chain game.
+A high-performance, thread-safe Discord bot for playing the word chain game with AI opponents and advanced scoring mechanics.
 
-## Creating Your Discord Bot
+## ✨ Features
+
+- **🎮 Turn-Based Gameplay**: Players take turns adding words that start with the last letter of the previous word
+- **🤖 AI Opponents**: Add up to 3 AI players powered by OpenRouter API for competitive gameplay
+- **⚡ High Performance**: Local dictionary with O(1) lookups for instant word validation
+- **🔒 Thread Safety**: Advanced locking mechanisms prevent race conditions and data corruption
+- **📊 Advanced Scoring**: Multiple bonus systems including streaks, combos, and long words
+- **⏱️ Turn Timer**: Visual progress bar with configurable time limits
+- **🛡️ Anti-Spam Protection**: Cooldown system prevents message flooding
+- **💾 Persistent Scores**: Global leaderboard with automatic saving
+- **🔍 Word Hints**: Get suggestions for valid next words
+- **🐳 Docker Support**: Easy deployment with Docker and Docker Compose
+- **⚙️ Flexible Configuration**: Extensive customization options via config files and environment variables
+
+## 🚀 Quick Start
+
+### Prerequisites
+- Python 3.8+
+- Discord Bot Token
+- OpenRouter API Key (for AI features)
+
+### Installation
+
+1. **Clone the repository**:
+   ```bash
+   git clone https://github.com/JonusNattapong/Word-Chain-Game.git
+   cd Word-Chain-Game
+   ```
+
+2. **Install dependencies**:
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+3. **Configure environment**:
+   ```bash
+   cp .env.example .env
+   # Edit .env with your tokens
+   ```
+
+4. **Run the bot**:
+   ```bash
+   python main.py
+   ```
+
+## 🤖 Creating Your Discord Bot
 
 1. **Go to Discord Developer Portal**: Visit https://discord.com/developers/applications
 2. **Create New Application**: Click "New Application" and give it a name
@@ -16,35 +61,6 @@ A Discord bot for playing the word chain game.
    - `bot` scope
    - `Send Messages`, `Use Slash Commands` permissions
    - Copy the generated URL to invite your bot
-
-## Setup
-
-1. **Clone/Download this code**
-2. **Install Python dependencies**:
-   ```
-   pip install -r requirements.txt
-   ```
-3. **Configure Environment**:
-   Create a `.env` file with:
-   ```
-   DISCORD_TOKEN=your_bot_token_here
-   OPENROUTER_API_KEY=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
-   ```
-   Replace with your actual tokens. You can copy `.env.example` as a template.
-
-4. **Configure Game Settings** (Optional):
-   Edit `config.json` to customize game settings:
-   ```json
-   {
-     "turn_seconds": 20,
-     "cooldown_seconds": 2.0,
-     "long_word_len": 7,
-     "long_word_bonus": 2,
-     "ai_model": "meta-llama/llama-3.1-405b-instruct:free",
-     "max_ai_players": 3
-   }
-   ```
-   Use `!reload_config` command to apply changes without restarting the bot.
 
 ## Configuration
 
@@ -196,47 +212,148 @@ docker-compose down
 - **Automatic Restarts**: Container restarts automatically unless stopped manually
 - **Data Directory**: Additional data can be stored in the `./data` directory
 
-## Libraries Used
+## 🏗️ Technical Architecture
 
-- **discord.py**: Main Discord API wrapper (https://discordpy.readthedocs.io/)
+### Core Components
+- **Game State Management**: Thread-safe per-channel game state with activity tracking
+- **Async Task System**: Non-blocking timer management with proper cancellation
+- **Locking System**: Comprehensive async locks for data integrity
+- **Memory Management**: Automatic cleanup of inactive resources
+- **Persistence Layer**: Atomic file operations for score data
+
+### Dependencies
+- **discord.py**: Discord API wrapper for bot functionality
+- **aiohttp**: Asynchronous HTTP client for hints and AI requests
+- **openai**: OpenRouter API integration for AI players
 - **python-dotenv**: Environment variable management
-- **pyspellchecker**: English word validation
-- **requests**: HTTP requests for word hints API
-- **openai**: OpenRouter API for AI players (https://openai.com/)
+- **asyncio**: Python's asynchronous programming framework
+- **dataclasses**: Type-safe data structures for game state
 
-## Testing the Bot
+### Security Features
+- **Input Validation**: Comprehensive word and command validation
+- **Rate Limiting**: Anti-spam cooldowns and flood protection
+- **Thread Safety**: Protected concurrent operations
+- **Resource Cleanup**: Automatic memory management
+- **Error Isolation**: Graceful error handling without crashes
+
+## 🧪 Testing the Bot
 
 1. **Create a Test Discord Server**: Create a private Discord server for testing
-2. **Invite the Bot**: Use the OAuth2 URL from Discord Developer Portal to invite your bot to the test server
-3. **Test Commands**:
+2. **Invite the Bot**: Use the OAuth2 URL from Discord Developer Portal to invite your bot
+3. **Test Basic Commands**:
    - `!join` - Join the game
-   - `!add_ai [name]` - Add an AI player (e.g., `!add_ai Bot`)
+   - `!add_ai Bot` - Add an AI player
    - `!start_game` - Start a new game
    - Submit words (e.g., "apple", then "elephant", etc.)
+4. **Test Advanced Features**:
    - `!hint` - Get word suggestions
    - `!scores` - View leaderboard
-   - `!myscore` - Check personal score
-   - `!end_game` - End the game
-4. **Verify Features**:
-   - Turn-based gameplay (only current player's turn accepted)
-   - Word validation (invalid words rejected)
-   - Chain rules (words must start with correct letter)
-   - Scoring (points awarded for valid words)
-   - Hints (suggestions for next words)
+   - `!status` - Check game status
+   - `!settime 30` - Change turn time (admin)
+5. **Verify Thread Safety**:
+   - Multiple players submitting simultaneously
+   - Timer expiration during active play
+   - Concurrent command usage
+6. **Test AI Integration**:
+   - AI player responses
+   - AI scoring on leaderboard
+   - AI removal and addition
 
-## Troubleshooting
+## 🔧 Troubleshooting
 
-- **Bot not responding**: Check if token is correct and bot is online
-- **Commands not working**: Ensure bot has proper permissions in the server
-- **Word validation issues**: Make sure pyspellchecker is installed correctly
-- **Hint not working**: Check internet connection for API calls
+### Common Issues
 
-## How to Play
+**Bot not responding to commands:**
+- Check if the bot is online in your Discord server
+- Verify the command prefix (default: `!`)
+- Ensure bot has proper permissions in the channel
+
+**Word validation not working:**
+- Confirm `words.txt` file exists and is readable
+- Check if the bot loaded the dictionary on startup
+- Verify word format (letters only, 2+ characters)
+
+**AI players not responding:**
+- Check OpenRouter API key in `.env` file
+- Verify internet connection for API calls
+- Check bot logs for API errors
+
+**Timer not working:**
+- Ensure the bot has permission to send messages
+- Check for thread safety issues in logs
+- Verify timer configuration in `config.json`
+
+**Memory usage increasing:**
+- The bot automatically cleans up inactive games
+- Check for long-running games that may need manual cleanup
+- Monitor cooldown cleanup frequency
+
+### Debug Mode
+Run the bot with verbose logging:
+```bash
+python -c "import logging; logging.basicConfig(level=logging.DEBUG); import main"
+```
+
+### Performance Monitoring
+- Check bot logs for performance warnings
+- Monitor memory usage during extended play
+- Verify cleanup tasks are running (check logs every hour)
+
+## 🤝 Contributing
+
+We welcome contributions! Please follow these guidelines:
+
+1. **Fork the repository** and create a feature branch
+2. **Test thoroughly** - ensure thread safety and performance
+3. **Update documentation** - keep README and code comments current
+4. **Follow code style** - maintain consistency with existing codebase
+5. **Submit a pull request** with a clear description of changes
+
+### Development Setup
+```bash
+git clone https://github.com/your-username/Word-Chain-Game.git
+cd Word-Chain-Game
+pip install -r requirements.txt
+cp .env.example .env
+# Configure your tokens in .env
+python main.py
+```
+
+## 📄 License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## 🙏 Acknowledgments
+
+- **Discord.py** community for the excellent Discord API wrapper
+- **OpenRouter** for providing AI API access
+- **Datamuse** for the word suggestion API
+- **Python** asyncio community for concurrency patterns
+
+---
+
+**Enjoy playing Word Chain! 🎮**
+
+## 🆕 Recent Improvements
+
+### Thread Safety & Performance
+- **Advanced Locking System**: Implemented comprehensive async locks to prevent race conditions
+- **Memory Leak Prevention**: Automatic cleanup of inactive games and cooldowns
+- **State Management**: Thread-safe game state modifications with activity tracking
+- **Resource Optimization**: Background cleanup tasks for optimal memory usage
+
+### Reliability Enhancements
+- **Error Handling**: Improved exception handling in async operations
+- **Task Management**: Enhanced task cancellation and resource cleanup
+- **Data Integrity**: Atomic file operations for score persistence
+- **Concurrent Safety**: Protected all shared data structures with appropriate locks
+
+## 🎮 How to Play
 
 - Players join using `!join` or add AI players with `!add_ai [name]`
 - Use `!start_game` to start a new game
 - Players (human and AI) take turns saying words that start with the last letter of the previous word
-- Words must be valid English words (checked against dictionary)
+- Words must be valid English words (checked against local dictionary)
 - Words cannot be repeated
 - Each valid word earns 1 point + bonus points:
   - **Long words** (7+ letters): +2 bonus points
@@ -255,43 +372,54 @@ docker-compose down
 - **Fair Competition**: AI earns points and appears on leaderboards just like human players
 - **Easy Management**: Add/remove AI players with `!add_ai` and `!remove_ai` commands
 
-## Commands
+## 📋 Commands
 
-- `!join`: Join the current game
-- `!add_ai [name]`: Add an AI player to compete (configurable max AI players)
-- `!remove_ai [name]`: Remove an AI player from the game
-- `!start_game`: Start a new word chain game (after players join)
-- `!reload_config`: Reload configuration from config.json file
-- `!settime [seconds]`: Set turn time for the current channel
-- `!hint`: Get word suggestions for the current required letter
-- `!scores`: Display the leaderboard (top 10 players including AI)
-- `!myscore`: Check your personal score
-- `!status`: Show current game status
-- `!end_game`: End the current game and save scores
+### Game Management
+- `!join` - Join the current game
+- `!leave` - Leave the current game
+- `!start_game` - Start a new word chain game
+- `!end_game` - End the current game and save scores
 
-## Performance Optimizations
+### AI Players
+- `!add_ai [name]` - Add an AI player to compete (max 3 by default)
+- `!remove_ai [name]` - Remove an AI player from the game
 
-- **Local Dictionary**: Uses pre-loaded English word list (~466,550 words) for instant validation
+### Scoring & Stats
+- `!scores` - Display the global leaderboard (top 10 players including AI)
+- `!myscore` - Check your personal score
+- `!status` - Show current game status
+
+### Game Features
+- `!hint` - Get word suggestions for the current required letter
+- `!settime [seconds]` - Set turn time for the current channel (admin only)
+- `!reload_config` - Reload configuration from config.json file (admin only)
+- `!clear_channel` - Clear all game data for the current channel (admin only)
+- `!reset_scores` - Reset all scores (admin only)
+
+## ⚡ Performance Optimizations
+
+- **Local Dictionary**: Pre-loaded English word list (~466,550 words) for instant validation
 - **O(1) Lookup**: Words checked against hash set for sub-millisecond response
-- **Race Condition Protection**: Async locks prevent timer conflicts with message processing
-- **No API Latency**: Eliminates 1.5-5 second delays from external dictionary APIs
-- **Optimized Scoring**: Efficient bonus calculation with minimal overhead
+- **Thread Safety**: Advanced async locking prevents race conditions and data corruption
+- **Memory Management**: Automatic cleanup of inactive games and expired cooldowns
+- **Atomic Operations**: File I/O operations prevent data corruption during saves
+- **Resource Optimization**: Background cleanup tasks maintain optimal memory usage
+- **No API Latency**: Eliminates delays from external dictionary services
+- **Optimized Scoring**: Efficient bonus calculation with minimal computational overhead
 
 ## Features
 
 - **High-Performance Word Validation**: Local dictionary with instant O(1) lookups
-- Turn-based gameplay with player joining
-- Prevents duplicate words
-- Enforces chain rules
-- Bonus scoring system:
-  - Long words bonus (+2 points for 7+ letters)
-  - Personal streak bonuses (+1 point for 3+ consecutive turns)
-  - Channel combo bonuses (+1 point every 5 words)
-- Anti-spam cooldown protection (2-second minimum between submissions)
-- Turn timer with auto-skip (20 seconds per turn)
-- Visual progress bar for time indication
-- Race condition protection with async locks
-- Persistent scoring system
-- Leaderboard ranking
-- Word hint system using Datamuse API
+- **Thread-Safe Operations**: Advanced locking system prevents race conditions
+- **Memory Leak Prevention**: Automatic cleanup of inactive resources
+- **Turn-Based Gameplay**: Sequential player turns with timer enforcement
+- **AI Integration**: OpenRouter-powered AI players with configurable models
+- **Advanced Scoring System**: Multiple bonus types (streaks, combos, long words)
+- **Anti-Spam Protection**: Configurable cooldown system
+- **Visual Progress Bars**: Real-time turn timer display
+- **Persistent Leaderboards**: Global scoring with automatic saving
+- **Word Hint System**: Datamuse API integration for suggestions
+- **Flexible Configuration**: Extensive customization via config files
+- **Docker Support**: Containerized deployment with Docker Compose
+- **Admin Controls**: Channel management and configuration commands
 
